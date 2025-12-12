@@ -1,5 +1,5 @@
 # edtech-ab-test-analysis
-🎯 Key Question Answered
+* Key Question Answered
 How can we help learners discover the next course in their learning journey?
 Our system provides five interconnected mechanisms:
 
