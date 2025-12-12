@@ -1,0 +1,809 @@
+# %% [markdown]
+# # A/B Testing for Educational Interventions
+# ## Impact Analysis of a New E-Learning Module
+# 
+# **Analyst**: [Your Name], Data Analyst with Education Background  
+# **Date**: [Current Date]  
+# **Context**: This analysis evaluates whether a new e-learning module improves student test scores compared to traditional instruction methods.
+# 
+# ---
+# 
+# ## 🎯 Educational Problem & Business Context
+# 
+# ### **Background**
+# As educational institutions increasingly adopt digital learning tools, it's crucial to evaluate their effectiveness rigorously. Our school/district has developed a new interactive e-learning module for teaching algebra concepts to 9th-grade students. Before rolling it out district-wide, we need to determine if it actually improves learning outcomes compared to our standard textbook-based instruction.
+# 
+# ### **Stakeholders**
+# - **Administrators**: Need to justify technology investments
+# - **Teachers**: Require effective instructional tools
+# - **Students**: Deserve the most effective learning experiences
+# - **Parents**: Want assurance of educational quality
+# 
+# ### **The Intervention**
+# - **Group A (Control)**: Traditional textbook-based instruction with teacher lectures
+# - **Group B (Treatment)**: New interactive e-learning module with simulations, immediate feedback, and adaptive pathways
+# 
+# **Duration**: 4-week instructional unit on algebraic equations
+# **Assessment**: Standardized end-of-unit test (0-100 points)
+
+# %%
+# ============================================================================
+# IMPORT LIBRARIES
+# ============================================================================
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import scipy.stats as stats
+from scipy.stats import shapiro, levene, ttest_ind, mannwhitneyu, norm
+import statsmodels.stats.power as smp
+import warnings
+warnings.filterwarnings('ignore')
+
+# Set style for educational context
+EDU_COLORS = ['#2E86AB', '#A23B72', '#F18F01', '#6B8F71', '#3D5A80']
+sns.set_palette(EDU_COLORS)
+sns.set_style("whitegrid")
+plt.rcParams['figure.figsize'] = (12, 8)
+plt.rcParams['font.size'] = 12
+
+print("✅ Libraries imported successfully")
+
+# %%
+# ============================================================================
+# GENERATE/SIMULATE EDUCATIONAL A/B TEST DATA
+# ============================================================================
+np.random.seed(42)  # For reproducibility
+
+# Simulation parameters based on educational research
+n_students_per_group = 150  # Adequate sample size for education research
+
+# Group A (Control): Standard instruction
+# Based on typical algebra test scores with mean ~70, SD ~12
+group_a_scores = np.random.normal(loc=72, scale=11, size=n_students_per_group)
+
+# Group B (Treatment): New e-learning module
+# Assuming a moderate positive effect (Cohen's d ~ 0.5)
+# Educational research: digital interventions often show 0.3-0.6 effect sizes
+group_b_scores = np.random.normal(loc=78, scale=10, size=n_students_per_group)
+
+# Add realistic variability: not all students benefit equally
+# Simulating that 20% of students don't engage with/don't benefit from the module
+non_responders = np.random.choice(range(n_students_per_group), 
+                                   size=int(0.2 * n_students_per_group), 
+                                   replace=False)
+for idx in non_responders:
+    # These students perform similarly to control group
+    group_b_scores[idx] = np.random.normal(loc=73, scale=12, size=1)
+
+# Ensure scores are within 0-100 range
+group_a_scores = np.clip(group_a_scores, 0, 100)
+group_b_scores = np.clip(group_b_scores, 0, 100)
+
+# Create DataFrame
+df = pd.DataFrame({
+    'student_id': range(1, 2 * n_students_per_group + 1),
+    'group': ['A'] * n_students_per_group + ['B'] * n_students_per_group,
+    'test_score': np.concatenate([group_a_scores, group_b_scores]),
+    'instruction_method': ['Standard'] * n_students_per_group + ['E-Learning'] * n_students_per_group
+})
+
+# Add some demographic covariates (simulated)
+df['prior_math_score'] = np.random.normal(loc=75, scale=10, size=len(df))
+df['study_hours_week'] = np.random.gamma(shape=2, scale=2, size=len(df))
+df['digital_literacy'] = np.random.choice(['Low', 'Medium', 'High'], size=len(df), p=[0.2, 0.5, 0.3])
+
+print("📊 Dataset Overview:")
+print(f"Total students: {len(df)}")
+print(f"Group A (Control): {len(df[df['group'] == 'A'])} students")
+print(f"Group B (Treatment): {len(df[df['group'] == 'B'])} students")
+print("\nFirst 5 rows:")
+print(df.head())
+
+# %%
+# ============================================================================
+# 1. EXPLORATORY DATA ANALYSIS & DESCRIPTIVE STATISTICS
+# ============================================================================
+print("=" * 70)
+print("1. EXPLORATORY DATA ANALYSIS")
+print("=" * 70)
+
+# Basic statistics by group
+group_stats = df.groupby('group')['test_score'].agg(['count', 'mean', 'std', 'min', 'max', 'median'])
+group_stats['sem'] = group_stats['std'] / np.sqrt(group_stats['count'])  # Standard error
+
+print("\n📈 Test Score Statistics by Group:")
+print(group_stats.round(2))
+
+print(f"\n📊 Score Difference (B - A): {group_stats.loc['B', 'mean'] - group_stats.loc['A', 'mean']:.2f} points")
+print(f"📈 Percent Improvement: {((group_stats.loc['B', 'mean'] / group_stats.loc['A', 'mean']) - 1) * 100:.1f}%")
+
+# Visualize distribution
+fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+
+# 1. Box plot
+sns.boxplot(x='group', y='test_score', data=df, ax=axes[0, 0])
+axes[0, 0].set_title('Test Score Distribution by Group', fontweight='bold')
+axes[0, 0].set_xlabel('Group (A=Control, B=E-Learning)')
+axes[0, 0].set_ylabel('Test Score (0-100)')
+axes[0, 0].axhline(y=70, color='r', linestyle='--', alpha=0.5, label='Passing Threshold (70)')
+
+# 2. Histogram with KDE
+sns.histplot(data=df, x='test_score', hue='group', kde=True, 
+             element='step', stat='density', common_norm=False, ax=axes[0, 1])
+axes[0, 1].set_title('Score Distribution Comparison', fontweight='bold')
+axes[0, 1].set_xlabel('Test Score')
+axes[0, 1].set_ylabel('Density')
+
+# 3. Violin plot
+sns.violinplot(x='group', y='test_score', data=df, inner='quartile', ax=axes[0, 2])
+axes[0, 2].set_title('Score Distribution with Quartiles', fontweight='bold')
+axes[0, 2].set_xlabel('Group')
+axes[0, 2].set_ylabel('Test Score')
+
+# 4. ECDF plot
+for group in ['A', 'B']:
+    sorted_scores = np.sort(df[df['group'] == group]['test_score'])
+    yvals = np.arange(len(sorted_scores))/float(len(sorted_scores))
+    axes[1, 0].plot(sorted_scores, yvals, label=f'Group {group}', linewidth=2)
+axes[1, 0].set_title('Empirical Cumulative Distribution', fontweight='bold')
+axes[1, 0].set_xlabel('Test Score')
+axes[1, 0].set_ylabel('Cumulative Probability')
+axes[1, 0].legend()
+axes[1, 0].grid(True, alpha=0.3)
+
+# 5. Bar plot with error bars
+axes[1, 1].bar(['Group A\n(Standard)', 'Group B\n(E-Learning)'], 
+               [group_stats.loc['A', 'mean'], group_stats.loc['B', 'mean']],
+               yerr=[group_stats.loc['A', 'sem'] * 1.96, group_stats.loc['B', 'sem'] * 1.96],
+               capsize=10, color=EDU_COLORS[:2])
+axes[1, 1].set_title('Mean Test Scores with 95% CI', fontweight='bold')
+axes[1, 1].set_ylabel('Mean Test Score')
+axes[1, 1].axhline(y=group_stats.loc['A', 'mean'], color='gray', linestyle='--', alpha=0.5)
+
+# 6. Difference plot
+difference = group_stats.loc['B', 'mean'] - group_stats.loc['A', 'mean']
+difference_se = np.sqrt(group_stats.loc['A', 'sem']**2 + group_stats.loc['B', 'sem']**2)
+axes[1, 2].errorbar(x=0, y=difference, yerr=difference_se * 1.96, 
+                    fmt='o', markersize=10, capsize=10, label='Difference (B-A)')
+axes[1, 2].axhline(y=0, color='r', linestyle='--', alpha=0.5)
+axes[1, 2].set_xlim(-0.5, 0.5)
+axes[1, 2].set_title('Treatment Effect Estimate', fontweight='bold')
+axes[1, 2].set_ylabel('Score Difference (Points)')
+axes[1, 2].set_xticks([])
+axes[1, 2].text(0.1, difference, f'{difference:.1f} points', va='bottom')
+
+plt.suptitle('Exploratory Analysis: E-Learning Module Impact', fontsize=16, fontweight='bold', y=1.02)
+plt.tight_layout()
+plt.savefig('exploratory_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# %%
+# ============================================================================
+# 2. STATISTICAL ASSUMPTIONS CHECKING
+# ============================================================================
+print("\n" + "=" * 70)
+print("2. STATISTICAL ASSUMPTIONS CHECKING")
+print("=" * 70)
+
+# Extract scores for each group
+scores_a = df[df['group'] == 'A']['test_score'].values
+scores_b = df[df['group'] == 'B']['test_score'].values
+
+print("\n🔍 Assumption 1: Normality Check (Shapiro-Wilk Test)")
+print("-" * 50)
+
+# Shapiro-Wilk test for normality
+shapiro_a = shapiro(scores_a)
+shapiro_b = shapiro(scores_b)
+
+print(f"Group A (Control): W = {shapiro_a.statistic:.4f}, p = {shapiro_a.pvalue:.4f}")
+print(f"Group B (Treatment): W = {shapiro_b.statistic:.4f}, p = {shapiro_b.pvalue:.4f}")
+
+# Interpretation
+alpha = 0.05
+if shapiro_a.pvalue > alpha and shapiro_b.pvalue > alpha:
+    print("✅ Both groups appear normally distributed (p > 0.05)")
+elif shapiro_a.pvalue > alpha or shapiro_b.pvalue > alpha:
+    print("⚠️ One group may not be normally distributed")
+else:
+    print("❌ Both groups show significant deviation from normality")
+
+# QQ plots for visual normality check
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+stats.probplot(scores_a, dist="norm", plot=axes[0])
+axes[0].set_title(f'Group A (Control) QQ Plot\nShapiro-Wilk p = {shapiro_a.pvalue:.4f}', fontweight='bold')
+axes[0].grid(True, alpha=0.3)
+
+stats.probplot(scores_b, dist="norm", plot=axes[1])
+axes[1].set_title(f'Group B (Treatment) QQ Plot\nShapiro-Wilk p = {shapiro_b.pvalue:.4f}', fontweight='bold')
+axes[1].grid(True, alpha=0.3)
+
+plt.suptitle('Normality Assessment: Quantile-Quantile Plots', fontsize=14, fontweight='bold', y=1.05)
+plt.tight_layout()
+plt.show()
+
+print("\n🔍 Assumption 2: Homogeneity of Variances (Levene's Test)")
+print("-" * 50)
+
+# Levene's test for equal variances
+levene_test = levene(scores_a, scores_b, center='median')
+print(f"Levene's Test: W = {levene_test.statistic:.4f}, p = {levene_test.pvalue:.4f}")
+
+if levene_test.pvalue > alpha:
+    print("✅ Variances appear equal between groups (p > 0.05)")
+    equal_var = True
+else:
+    print("⚠️ Variances may not be equal between groups")
+    equal_var = False
+
+# F-test for variance comparison (traditional approach)
+f_stat = np.var(scores_b, ddof=1) / np.var(scores_a, ddof=1)
+df1, df2 = len(scores_b)-1, len(scores_a)-1
+f_pvalue = 2 * min(stats.f.cdf(f_stat, df1, df2), 1 - stats.f.cdf(f_stat, df1, df2))
+
+print(f"F-test for equal variances: F = {f_stat:.4f}, p = {f_pvalue:.4f}")
+print(f"Variance Ratio (B/A): {f_stat:.3f}")
+print(f"Standard Deviation - Group A: {np.std(scores_a):.2f}")
+print(f"Standard Deviation - Group B: {np.std(scores_b):.2f}")
+
+print("\n🔍 Assumption 3: Independence Check")
+print("-" * 50)
+print("✅ Assumed satisfied through random assignment of students")
+print("✅ No student was in both groups")
+print("✅ No communication between groups during intervention period")
+
+# %%
+# ============================================================================
+# 3. HYPOTHESIS TESTING
+# ============================================================================
+print("\n" + "=" * 70)
+print("3. HYPOTHESIS TESTING")
+print("=" * 70)
+
+# Define hypotheses
+print("\n📋 Formal Hypothesis Statements:")
+print("-" * 50)
+print("H₀ (Null Hypothesis): μ_B - μ_A = 0")
+print("   The new e-learning module has NO effect on test scores")
+print("\nH₁ (Alternative Hypothesis): μ_B - μ_A > 0")
+print("   The new e-learning module INCREASES test scores")
+print("\nTest: One-tailed, α = 0.05")
+
+print("\n🔬 Choosing the Appropriate Statistical Test:")
+print("-" * 50)
+
+# Decision logic for test selection
+if shapiro_a.pvalue > 0.05 and shapiro_b.pvalue > 0.05:
+    print("✅ Normality assumption satisfied → Parametric test appropriate")
+    if levene_test.pvalue > 0.05:
+        print("✅ Equal variances assumption satisfied → Standard t-test")
+        test_used = "Independent samples t-test (equal variances)"
+    else:
+        print("⚠️ Equal variances assumption violated → Welch's t-test")
+        test_used = "Welch's t-test (unequal variances)"
+else:
+    print("❌ Normality assumption violated → Non-parametric test")
+    test_used = "Mann-Whitney U test"
+
+print(f"\nSelected test: {test_used}")
+
+# Perform the selected test
+print("\n📊 Hypothesis Test Results:")
+print("-" * 50)
+
+if "t-test" in test_used:
+    # Perform t-test (one-tailed for improvement)
+    if "equal variances" in test_used:
+        t_stat, p_value = ttest_ind(scores_b, scores_a, equal_var=True, alternative='greater')
+    else:
+        t_stat, p_value = ttest_ind(scores_b, scores_a, equal_var=False, alternative='greater')
+    
+    # Degrees of freedom
+    if "equal variances" in test_used:
+        df = len(scores_a) + len(scores_b) - 2
+    else:
+        # Welch-Satterthwaite equation for degrees of freedom
+        var_a = np.var(scores_a, ddof=1)
+        var_b = np.var(scores_b, ddof=1)
+        n_a = len(scores_a)
+        n_b = len(scores_b)
+        df = ((var_a/n_a + var_b/n_b)**2) / ((var_a/n_a)**2/(n_a-1) + (var_b/n_b)**2/(n_b-1))
+    
+    print(f"t-statistic: {t_stat:.4f}")
+    print(f"Degrees of freedom: {df:.1f}")
+    print(f"p-value (one-tailed): {p_value:.6f}")
+    
+else:
+    # Perform Mann-Whitney U test (one-tailed)
+    u_stat, p_value = mannwhitneyu(scores_b, scores_a, alternative='greater')
+    
+    print(f"U-statistic: {u_stat:.0f}")
+    print(f"p-value (one-tailed): {p_value:.6f}")
+
+# Determine statistical significance
+alpha = 0.05
+if p_value < alpha:
+    print(f"\n✅ STATISTICALLY SIGNIFICANT: p ({p_value:.4f}) < α ({alpha})")
+    print("   We REJECT the null hypothesis")
+    print("   The e-learning module shows a statistically significant improvement")
+else:
+    print(f"\n❌ NOT STATISTICALLY SIGNIFICANT: p ({p_value:.4f}) ≥ α ({alpha})")
+    print("   We FAIL TO REJECT the null hypothesis")
+    print("   No statistical evidence that the e-learning module improves scores")
+
+# Confidence interval for the difference
+mean_diff = np.mean(scores_b) - np.mean(scores_a)
+se_diff = np.sqrt(np.var(scores_a)/len(scores_a) + np.var(scores_b)/len(scores_b))
+ci_lower = mean_diff - 1.96 * se_diff
+ci_upper = mean_diff + 1.96 * se_diff
+
+print(f"\n📈 95% Confidence Interval for Difference (B - A):")
+print(f"   [{ci_lower:.2f}, {ci_upper:.2f}] points")
+print(f"   Point estimate: {mean_diff:.2f} points improvement")
+
+# %%
+# ============================================================================
+# 4. EFFECT SIZE CALCULATION
+# ============================================================================
+print("\n" + "=" * 70)
+print("4. EFFECT SIZE ANALYSIS")
+print("=" * 70)
+
+print("\n📏 Why Effect Size Matters in Education:")
+print("-" * 50)
+print("Statistical significance tells us IF there's an effect")
+print("Effect size tells us HOW LARGE the effect is")
+print("\nIn education, we need both statistical AND practical significance")
+
+# Calculate Cohen's d (standardized mean difference)
+def cohens_d(group1, group2):
+    """Calculate Cohen's d for two independent groups"""
+    # Pooled standard deviation
+    n1, n2 = len(group1), len(group2)
+    var1, var2 = np.var(group1, ddof=1), np.var(group2, ddof=1)
+    pooled_std = np.sqrt(((n1-1)*var1 + (n2-1)*var2) / (n1 + n2 - 2))
+    
+    # Cohen's d
+    d = (np.mean(group2) - np.mean(group1)) / pooled_std
+    return d, pooled_std
+
+cohens_d_value, pooled_std = cohens_d(scores_a, scores_b)
+
+# Calculate Hedge's g (similar to Cohen's d but with bias correction)
+def hedges_g(group1, group2):
+    """Calculate Hedge's g (bias-corrected Cohen's d)"""
+    d, _ = cohens_d(group1, group2)
+    n1, n2 = len(group1), len(group2)
+    
+    # Correction factor
+    df = n1 + n2 - 2
+    correction = 1 - (3 / (4 * df - 1))
+    
+    g = d * correction
+    return g
+
+hedges_g_value = hedges_g(scores_a, scores_b)
+
+# Calculate Glass's Δ (uses control group SD only)
+glass_delta = (np.mean(scores_b) - np.mean(scores_a)) / np.std(scores_a, ddof=1)
+
+# Calculate common language effect size (probability that random score from B > random score from A)
+def common_language_es(group1, group2):
+    """Calculate common language effect size"""
+    count = 0
+    total = 0
+    for x in group1:
+        for y in group2:
+            total += 1
+            if y > x:
+                count += 1
+    return count / total
+
+# Approximate CLES (faster computation)
+cles = stats.norm.cdf(cohens_d_value / np.sqrt(2))
+
+print("\n📊 Effect Size Metrics:")
+print("-" * 50)
+print(f"Cohen's d: {cohens_d_value:.3f}")
+print(f"Hedge's g (corrected): {hedges_g_value:.3f}")
+print(f"Glass's Δ: {glass_delta:.3f}")
+print(f"Common Language ES: {cles:.3f} (probability B > A)")
+
+print("\n📚 Interpreting Cohen's d in Educational Context:")
+print("-" * 50)
+print("|d| < 0.20: Negligible effect (likely not educationally meaningful)")
+print("0.20 ≤ |d| < 0.50: Small effect (may be meaningful with large n)")
+print("0.50 ≤ |d| < 0.80: Medium effect (typically educationally meaningful)")
+print("|d| ≥ 0.80: Large effect (clearly educationally meaningful)")
+
+if abs(cohens_d_value) < 0.2:
+    print(f"\n📉 Our effect size ({cohens_d_value:.3f}) is NEGLIGIBLE")
+    print("   The e-learning module's impact is too small to be practically meaningful")
+elif abs(cohens_d_value) < 0.5:
+    print(f"\n📏 Our effect size ({cohens_d_value:.3f}) is SMALL")
+    print("   The e-learning module shows a modest effect that may be meaningful")
+elif abs(cohens_d_value) < 0.8:
+    print(f"\n📐 Our effect size ({cohens_d_value:.3f}) is MEDIUM")
+    print("   The e-learning module shows an educationally meaningful effect")
+else:
+    print(f"\n🚀 Our effect size ({cohens_d_value:.3f}) is LARGE")
+    print("   The e-learning module shows a substantial, educationally important effect")
+
+# Visualize effect size
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Plot 1: Distribution overlap
+x = np.linspace(40, 100, 1000)
+pdf_a = norm.pdf(x, np.mean(scores_a), np.std(scores_a, ddof=1))
+pdf_b = norm.pdf(x, np.mean(scores_b), np.std(scores_b, ddof=1))
+
+axes[0].plot(x, pdf_a, label='Group A (Standard)', linewidth=2, color=EDU_COLORS[0])
+axes[0].plot(x, pdf_b, label='Group B (E-Learning)', linewidth=2, color=EDU_COLORS[1])
+axes[0].fill_between(x, pdf_a, alpha=0.3, color=EDU_COLORS[0])
+axes[0].fill_between(x, pdf_b, alpha=0.3, color=EDU_COLORS[1])
+axes[0].set_title('Distribution Overlap Illustrating Effect Size', fontweight='bold')
+axes[0].set_xlabel('Test Score')
+axes[0].set_ylabel('Probability Density')
+axes[0].legend()
+axes[0].text(0.05, 0.95, f"Cohen's d = {cohens_d_value:.3f}", 
+             transform=axes[0].transAxes, fontsize=12, 
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+# Plot 2: Effect size comparison
+effect_sizes = {
+    'Our Study': cohens_d_value,
+    'Typical EdTech': 0.45,
+    'Small Effect': 0.2,
+    'Medium Effect': 0.5,
+    'Large Effect': 0.8
+}
+
+colors = ['#2E86AB' if k == 'Our Study' else 'gray' for k in effect_sizes.keys()]
+axes[1].barh(list(effect_sizes.keys()), list(effect_sizes.values()), color=colors)
+axes[1].set_xlabel("Cohen's d")
+axes[1].set_title('Effect Size Comparison', fontweight='bold')
+axes[1].axvline(x=0.2, color='red', linestyle='--', alpha=0.5, label='Small threshold')
+axes[1].axvline(x=0.5, color='orange', linestyle='--', alpha=0.5, label='Medium threshold')
+axes[1].axvline(x=0.8, color='green', linestyle='--', alpha=0.5, label='Large threshold')
+axes[1].legend(loc='lower right')
+
+plt.suptitle('Effect Size Analysis: Magnitude of Educational Impact', fontsize=14, fontweight='bold', y=1.05)
+plt.tight_layout()
+plt.savefig('effect_size_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# %%
+# ============================================================================
+# 5. STATISTICAL POWER ANALYSIS
+# ============================================================================
+print("\n" + "=" * 70)
+print("5. STATISTICAL POWER ANALYSIS")
+print("=" * 70)
+
+print("\n💡 Understanding Statistical Power:")
+print("-" * 50)
+print("Power = Probability of detecting an effect if it truly exists")
+print("Typically want power ≥ 0.80 (80% chance of detecting true effect)")
+print("Low power increases risk of Type II error (false negative)")
+
+# Calculate achieved power post-hoc
+n_a, n_b = len(scores_a), len(scores_b)
+effect_size = cohens_d_value
+alpha = 0.05
+
+# Using statsmodels for power calculation
+power_analysis = smp.TTestIndPower()
+achieved_power = power_analysis.power(effect_size=effect_size, 
+                                      nobs1=n_a, 
+                                      alpha=alpha, 
+                                      ratio=n_b/n_a,
+                                      alternative='larger')
+
+print("\n📊 Power Analysis Results:")
+print("-" * 50)
+print(f"Sample size - Group A: {n_a}")
+print(f"Sample size - Group B: {n_b}")
+print(f"Total sample: {n_a + n_b}")
+print(f"Effect size (Cohen's d): {effect_size:.3f}")
+print(f"Alpha level: {alpha}")
+print(f"\n✅ Achieved power: {achieved_power:.3f} ({achieved_power*100:.1f}%)")
+
+if achieved_power >= 0.8:
+    print("\n✅ SUFFICIENT POWER: Our study had adequate power to detect the observed effect")
+else:
+    print(f"\n⚠️ INSUFFICIENT POWER: Study may have missed smaller effects")
+
+# What sample size would we need for various effect sizes?
+print("\n📈 Required Sample Sizes for Different Effect Sizes (Power = 0.80):")
+print("-" * 50)
+
+effect_sizes_to_test = [0.2, 0.3, 0.5, 0.8]
+print("Effect Size (d) | Required N per group | Total N")
+print("-" * 40)
+
+for d in effect_sizes_to_test:
+    required_n = power_analysis.solve_power(effect_size=d, 
+                                           power=0.8, 
+                                           alpha=0.05, 
+                                           ratio=1,
+                                           alternative='larger')
+    print(f"{d:14.1f} | {required_n:19.0f} | {required_n*2:8.0f}")
+
+# Power curve visualization
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Plot 1: Power vs Sample Size for our effect size
+sample_sizes = np.arange(10, 500, 10)
+powers = power_analysis.power(effect_size=effect_size, 
+                              nobs1=sample_sizes, 
+                              alpha=alpha, 
+                              ratio=1,
+                              alternative='larger')
+
+axes[0].plot(sample_sizes, powers, linewidth=2, color=EDU_COLORS[0])
+axes[0].axhline(y=0.8, color='r', linestyle='--', alpha=0.5, label='Desired power (0.8)')
+axes[0].axvline(x=n_a, color='g', linestyle='--', alpha=0.5, label=f'Our sample ({n_a})')
+axes[0].set_xlabel('Sample Size per Group')
+axes[0].set_ylabel('Statistical Power')
+axes[0].set_title(f'Power Curve for d = {effect_size:.2f}', fontweight='bold')
+axes[0].legend()
+axes[0].grid(True, alpha=0.3)
+
+# Plot 2: Power for different effect sizes
+effect_sizes_range = np.linspace(0.1, 1.0, 50)
+power_for_our_n = power_analysis.power(effect_size=effect_sizes_range, 
+                                       nobs1=n_a, 
+                                       alpha=alpha, 
+                                       ratio=1,
+                                       alternative='larger')
+
+axes[1].plot(effect_sizes_range, power_for_our_n, linewidth=2, color=EDU_COLORS[1])
+axes[1].axhline(y=0.8, color='r', linestyle='--', alpha=0.5, label='Desired power (0.8)')
+axes[1].axvline(x=effect_size, color='g', linestyle='--', alpha=0.5, label=f'Our effect ({effect_size:.2f})')
+axes[1].set_xlabel("Effect Size (Cohen's d)")
+axes[1].set_ylabel('Statistical Power')
+axes[1].set_title(f'Power with N = {n_a} per group', fontweight='bold')
+axes[1].legend()
+axes[1].grid(True, alpha=0.3)
+
+plt.suptitle('Statistical Power Analysis: Detection Capability Assessment', fontsize=14, fontweight='bold', y=1.05)
+plt.tight_layout()
+plt.savefig('power_analysis.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# %%
+# ============================================================================
+# 6. PRACTICAL SIGNIFICANCE & EDUCATIONAL IMPLICATIONS
+# ============================================================================
+print("\n" + "=" * 70)
+print("6. PRACTICAL SIGNIFICANCE & EDUCATIONAL IMPLICATIONS")
+print("=" * 70)
+
+print("\n🎯 From Statistical to Practical Significance:")
+print("-" * 50)
+print("Statistical significance: Is the effect REAL?")
+print("Practical significance: Is the effect MEANINGFUL for educators?")
+
+mean_a = np.mean(scores_a)
+mean_b = np.mean(scores_b)
+mean_diff = mean_b - mean_a
+
+# Calculate various practical metrics
+print("\n📊 Practical Impact Metrics:")
+print("-" * 50)
+
+# 1. Raw score improvement
+print(f"1. Raw Score Improvement: {mean_diff:.1f} points")
+print(f"   Group A (Standard): {mean_a:.1f}")
+print(f"   Group B (E-Learning): {mean_b:.1f}")
+
+# 2. Percent improvement
+percent_improvement = ((mean_b / mean_a) - 1) * 100
+print(f"\n2. Percent Improvement: {percent_improvement:.1f}%")
+
+# 3. Pass rate improvement (assuming 70 is passing)
+pass_rate_a = np.mean(scores_a >= 70) * 100
+pass_rate_b = np.mean(scores_b >= 70) * 100
+pass_rate_diff = pass_rate_b - pass_rate_a
+
+print(f"\n3. Pass Rate Impact (≥70 points):")
+print(f"   Standard method: {pass_rate_a:.1f}% pass rate")
+print(f"   E-learning: {pass_rate_b:.1f}% pass rate")
+print(f"   Improvement: +{pass_rate_diff:.1f} percentage points")
+
+# 4. Number needed to treat (NNT)
+# In education: How many students need the intervention for one additional student to pass?
+if pass_rate_diff > 0:
+    nnt = 100 / pass_rate_diff
+    print(f"\n4. Number Needed to Treat (NNT): {nnt:.1f}")
+    print(f"   For every {nnt:.0f} students using the e-learning module,")
+    print(f"   1 additional student passes who wouldn't have with standard instruction")
+else:
+    print(f"\n4. Number Needed to Treat: Not applicable (no improvement)")
+
+# 5. Cost-effectiveness considerations
+print(f"\n5. Cost-Effectiveness Considerations:")
+print(f"   Assuming e-learning module costs $50/student for license")
+print(f"   Cost per additional point gained: ${50/mean_diff:.2f}")
+if pass_rate_diff > 0:
+    print(f"   Cost per additional student passing: ${(50 * nnt):.2f}")
+
+# 6. Equity considerations
+# Analyze effect by digital literacy level
+print(f"\n6. Equity Analysis by Digital Literacy:")
+print("-" * 40)
+
+for literacy_level in ['Low', 'Medium', 'High']:
+    scores_a_level = df[(df['group'] == 'A') & (df['digital_literacy'] == literacy_level)]['test_score']
+    scores_b_level = df[(df['group'] == 'B') & (df['digital_literacy'] == literacy_level)]['test_score']
+    
+    if len(scores_a_level) > 5 and len(scores_b_level) > 5:
+        diff_level = np.mean(scores_b_level) - np.mean(scores_a_level)
+        print(f"   {literacy_level} digital literacy: {diff_level:+.1f} point difference")
+
+print("\n📋 Educator's Decision Framework:")
+print("-" * 50)
+
+# Decision matrix
+print("\nShould we adopt the e-learning module?")
+print("Consider these factors:")
+
+decision_factors = [
+    ("Statistical Significance", p_value < 0.05, "Primary requirement"),
+    ("Effect Size (Cohen's d)", cohens_d_value >= 0.3, "Should be educationally meaningful"),
+    ("Practical Impact", mean_diff >= 3, "At least 3-point improvement"),
+    ("Pass Rate Improvement", pass_rate_diff >= 5, "Meaningful increase in passers"),
+    ("Cost-Effectiveness", (50/mean_diff) < 20, "Reasonable cost per point"),
+    ("Equity", "All groups benefit", "Check digital literacy analysis")
+]
+
+for factor, condition, rationale in decision_factors:
+    if factor == "Equity":
+        print(f"   • {factor}: {condition} - {rationale}")
+    else:
+        status = "✅ YES" if condition else "❌ NO"
+        print(f"   • {factor}: {status} - {rationale}")
+
+# Overall recommendation
+print("\n🎯 FINAL RECOMMENDATION:")
+print("-" * 50)
+
+if p_value < 0.05 and cohens_d_value >= 0.3:
+    if (50/mean_diff) < 25:  # Reasonable cost per point
+        print("✅ ADOPT the e-learning module")
+        print("   - Statistically significant improvement")
+        print(f"   - Medium effect size (d = {cohens_d_value:.2f})")
+        print(f"   - Cost-effective at ${50/mean_diff:.2f} per point gained")
+        
+        # Implementation suggestions
+        print("\n📋 Implementation Strategy:")
+        print("   1. Pilot in 1-2 classes first")
+        print("   2. Provide teacher training on the module")
+        print("   3. Offer digital literacy support for students")
+        print("   4. Monitor outcomes for first semester")
+        
+    else:
+        print("⚠️ CONSIDER with modifications")
+        print("   - Effective but may not be cost-effective for all schools")
+        print("   - Consider school-specific budget constraints")
+else:
+    print("❌ DO NOT ADOPT at this time")
+    print("   - Either not statistically significant or effect too small")
+    print("   - Consider revising the module or implementation approach")
+
+# %%
+# ============================================================================
+# 7. LIMITATIONS & FUTURE RESEARCH
+# ============================================================================
+print("\n" + "=" * 70)
+print("7. LIMITATIONS & FUTURE RESEARCH DIRECTIONS")
+print("=" * 70)
+
+print("\n⚠️ Study Limitations:")
+print("-" * 50)
+
+limitations = [
+    ("External Validity", "Single school/district may not generalize to others"),
+    ("Short Duration", "4-week intervention may not show long-term effects"),
+    ("Testing Instrument", "Single test may not capture all learning dimensions"),
+    ("Implementation Fidelity", "Variation in how teachers implemented the module"),
+    ("Hawthorne Effect", "New technology may motivate students temporarily"),
+    ("Digital Divide", "Students with varying digital literacy may benefit differently")
+]
+
+for i, (limitation, explanation) in enumerate(limitations, 1):
+    print(f"{i}. {limitation}: {explanation}")
+
+print("\n🔬 Recommendations for Future Research:")
+print("-" * 50)
+
+future_studies = [
+    ("Longitudinal Study", "Track students for 1+ year to assess retention"),
+    ("Multi-Site Replication", "Test across diverse school districts"),
+    ("Dosage-Response", "Vary hours of e-learning to find optimal amount"),
+    ("Subgroup Analysis", "Analyze effects by gender, prior achievement, SES"),
+    ("Qualitative Component", "Add student/teacher interviews for context"),
+    ("Cost-Benefit Analysis", "Full economic analysis including teacher time")
+]
+
+for i, (study_type, description) in enumerate(future_studies, 1):
+    print(f"{i}. {study_type}: {description}")
+
+print("\n💡 For Your GitHub Portfolio:")
+print("-" * 50)
+print("1. Consider adding a Streamlit dashboard for interactive exploration")
+print("2. Create a Shiny app (R) or Dash app (Python) for similar analysis")
+print("3. Connect to real A/B testing platforms (Optimizely, Google Optimize)")
+print("4. Add Bayesian A/B testing methods as an alternative approach")
+print("5. Include power analysis for planning future studies")
+
+# %%
+# ============================================================================
+# 8. EXPORT RESULTS FOR SHARING
+# ============================================================================
+print("\n" + "=" * 70)
+print("8. EXPORTING RESULTS")
+print("=" * 70)
+
+# Create summary dataframe
+summary_results = pd.DataFrame({
+    'Metric': [
+        'Group A Mean Score', 'Group B Mean Score', 'Mean Difference',
+        'Percent Improvement', 'Cohen\'s d', 'Statistical Power',
+        'p-value', 'Pass Rate A', 'Pass Rate B', 'Pass Rate Improvement',
+        'Sample Size A', 'Sample Size B', 'Cost per Point'
+    ],
+    'Value': [
+        f"{mean_a:.2f}", f"{mean_b:.2f}", f"{mean_diff:.2f}",
+        f"{percent_improvement:.2f}%", f"{cohens_d_value:.3f}", f"{achieved_power:.3f}",
+        f"{p_value:.6f}", f"{pass_rate_a:.2f}%", f"{pass_rate_b:.2f}%", f"{pass_rate_diff:.2f}pp",
+        f"{n_a}", f"{n_b}", f"${50/mean_diff:.2f}"
+    ],
+    'Interpretation': [
+        'Control group performance',
+        'Treatment group performance',
+        'B - A (positive favors e-learning)',
+        'Relative improvement',
+        'Standardized effect size',
+        'Probability of detecting true effect',
+        'Statistical significance',
+        'Percentage scoring ≥70 in control',
+        'Percentage scoring ≥70 in treatment',
+        'Increase in pass percentage',
+        'Students in standard instruction',
+        'Students using e-learning module',
+        'Economic efficiency metric'
+    ]
+})
+
+print("\n📋 Summary of Key Results:")
+print("-" * 50)
+print(summary_results.to_string(index=False))
+
+# Export data for visualization
+export_df = df[['student_id', 'group', 'test_score', 'prior_math_score', 
+                'study_hours_week', 'digital_literacy']].copy()
+
+# Add effect size metrics to each student
+export_df['effect_size_category'] = np.where(
+    export_df['group'] == 'B',
+    f'd = {cohens_d_value:.2f} ({["Negligible","Small","Medium","Large"][np.searchsorted([0.2,0.5,0.8], abs(cohens_d_value))]} effect)',
+    'Control Group'
+)
+
+# Save to CSV
+export_df.to_csv('ab_test_educational_data.csv', index=False)
+summary_results.to_csv('ab_test_summary_results.csv', index=False)
+
+print("\n💾 Files saved:")
+print("   - ab_test_educational_data.csv: Student-level data")
+print("   - ab_test_summary_results.csv: Analysis summary")
+print("   - exploratory_analysis.png: EDA visualizations")
+print("   - effect_size_analysis.png: Effect size visualizations")
+print("   - power_analysis.png: Power analysis visualizations")
+
+print("\n" + "=" * 70)
+print("ANALYSIS COMPLETE")
+print("=" * 70)
